@@ -16,6 +16,7 @@
 #include <random>
 #include <sstream>
 #include <fstream>
+#include <algorithm>
 
 #define SCOPE_PROFILE_CPU_CONSUMPTION 1
 #define SCOPE_PROFILE_COVERAGE 2
@@ -117,45 +118,32 @@ public:
       return;
     }
 
-    try
-    {      
-      outFile << "===== Function Call Counts =====\n";
-      if (counters.empty())
-      {
-        outFile << "No function calls recorded.\n";
-      }
-      else
-      {
-        for (const auto &[func, count] : counters)
-        {
-          outFile << func << ": " << count << " calls\n";
-        }
-      }
+    // Write number of calls, sorted by count
+    outFile << "===== Function Call Counts =====\n";
+    std::vector<std::pair<std::string, unsigned int>> sortedCalls(counters.begin(), counters.end());
+    std::sort(sortedCalls.begin(), sortedCalls.end(),
+              [](const std::pair<std::string, unsigned int> &a, const std::pair<std::string, unsigned int> &b)
+              {
+                return a.second > b.second;
+              });
 
-      outFile << "\n===== Time Spent (us) =====\n";
-      if (timeCounters.empty())
-      {
-        outFile << "No timing data recorded.\n";
-      }
-      else
-      {
-        for (const auto &[func, time] : timeCounters)
-        {
-          if (timerNames.find(func) != timerNames.end())
-          {
-            outFile << timerNames.at(func) << ": " << time << " us\n";
-          }
-          else
-          {
-            outFile << func << ": " << time << " us\n";
-          }
-        }
-      }
-    }
-    catch (const std::exception &e)
+    for (const auto &entry : sortedCalls)
     {
-      std::cerr << "Exception occurred while writing to file: " << e.what() << std::endl;
-      throw;
+      outFile << entry.first << ": " << entry.second << " calls\n";
+    }
+
+    // Write time spent in functions, sorted by time
+    outFile << "\n===== Time Spent (us) =====\n";
+    std::vector<std::pair<std::string, long long>> sortedTimes(timeCounters.begin(), timeCounters.end());
+    std::sort(sortedTimes.begin(), sortedTimes.end(),
+              [](const std::pair<std::string, long long> &a, const std::pair<std::string, long long> &b)
+              {
+                return a.second > b.second;
+              });
+
+    for (const auto &entry : sortedTimes)
+    {
+      outFile << timerNames.at(entry.first) << ": " << entry.second << " us\n";
     }
 
     outFile.close();
@@ -213,7 +201,6 @@ private:
   Profiler &refProfiler;
   std::chrono::time_point<std::chrono::high_resolution_clock> start;
 };
-
 
 #if defined(SCOPE_PROFILE_COVERAGE)
 #define RECORD_CALL() Profiler::getInstance().recordCall(__FUNCTION__, __FILE__, __LINE__)
