@@ -1,13 +1,5 @@
 #pragma once
 
-#if defined(__cplusplus)
-#if __cplusplus < 201103L
-#error "This code needs at least a C++11 compliant compiler."
-#endif
-#else
-#error "This profiler is meant to work with a C++ compiler."
-#endif
-
 #include <unordered_map>
 #include <string>
 #include <iostream>
@@ -18,65 +10,15 @@
 #include <fstream>
 #include <algorithm>
 
-#define SCOPE_PROFILE_CPU_CONSUMPTION 1
-#define SCOPE_PROFILE_COVERAGE 2
-
-// Select the profiling mode here by uncommenting the desired mode:
-#define SCOPE_SELECTED_PROFILE SCOPE_PROFILE_CPU_CONSUMPTION
-// #define SCOPE_SELECTED_PROFILE SCOPE_PROFILE_COVERAGE
-
-#if defined(SCOPE_SELECTED_PROFILE)
-#if (SCOPE_SELECTED_PROFILE != SCOPE_PROFILE_CPU_CONSUMPTION) && \
-    (SCOPE_SELECTED_PROFILE != SCOPE_PROFILE_COVERAGE)
-#error "Multiple profiling modes are defined. Please enable exactly one."
-#endif
-#else
-#warning "No profiling mode selected. Release mode."
-#endif
-
-#if (SCOPE_SELECTED_PROFILE == SCOPE_PROFILE_CPU_CONSUMPTION)
-#elif (SCOPE_SELECTED_PROFILE == SCOPE_PROFILE_COVERAGE)
-#endif
+#define PROFILER_ENABLED
 
 class Timer;
 
-/// @brief Generate a random (enough) UUID
-static std::string generate_uuid()
+struct ProfileInfo
 {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<> dis(0, 15);
-
-  std::stringstream ss;
-  ss << std::hex;
-
-  for (int i = 0; i < 8; i++)
-  {
-    ss << dis(gen);
-  }
-  ss << "-";
-  for (int i = 0; i < 4; i++)
-  {
-    ss << dis(gen);
-  }
-  ss << "-";
-  for (int i = 0; i < 4; i++)
-  {
-    ss << dis(gen);
-  }
-  ss << "-";
-  for (int i = 0; i < 4; i++)
-  {
-    ss << dis(gen);
-  }
-  ss << "-";
-  for (int i = 0; i < 12; i++)
-  {
-    ss << dis(gen);
-  }
-
-  return ss.str();
-}
+  unsigned int count = 0;
+  long long duration = 0;
+};
 
 /// @brief A profiler class that records the number of calls to a function/method
 /// and the time spent in a function/method
@@ -91,26 +33,24 @@ public:
     return instance;
   }
 
-  // Record a call for a given function/method name
-  void recordCall(const std::string &functionName, const std::string &fileName, int lineNo)
+  void recordTimeAndCalls(const std::string &functionName, const std::string &fileName, int lineNo, long long duration)
   {
     std::lock_guard<std::mutex> lock(mtx);
     std::stringstream ss;
     ss << fileName << ":" << lineNo << ":" << functionName;
-    counters[ss.str()]++;
+    std::string funcIdentifier = ss.str();
+    ProfileInfo &info = profileData[funcIdentifier];
+    info.count++;
+    info.duration += duration;
   }
 
-  void recordTime(const std::string &uniqueID, long long duration)
+  void dumpTextReport(const std::string &filename) const
   {
-    std::lock_guard<std::mutex> lock(timeMtx);
-    if (timerNames.find(uniqueID) != timerNames.end())
-    {
-      timeCounters[timerNames[uniqueID]] += duration;
+    if (profileData.empty())
+    {      
+      return;
     }
-  }
 
-  void dumpReport(const std::string &filename) const
-  {
     std::ofstream outFile(filename);
     if (!outFile.is_open())
     {
@@ -118,32 +58,21 @@ public:
       return;
     }
 
-    // Write number of calls, sorted by count
-    outFile << "===== Function Call Counts =====\n";
-    std::vector<std::pair<std::string, unsigned int>> sortedCalls(counters.begin(), counters.end());
-    std::sort(sortedCalls.begin(), sortedCalls.end(),
-              [](const std::pair<std::string, unsigned int> &a, const std::pair<std::string, unsigned int> &b)
+    std::vector<std::pair<std::string, ProfileInfo>> entries(profileData.begin(), profileData.end());
+    std::sort(entries.begin(), entries.end(),
+              [](const std::pair<std::string, ProfileInfo> &a, const std::pair<std::string, ProfileInfo> &b)
               {
-                return a.second > b.second;
+                if (a.second.duration != b.second.duration)
+                  return a.second.duration > b.second.duration;
+                return a.second.count > b.second.count;
               });
 
-    for (const auto &entry : sortedCalls)
+    // Write out the sorted data
+    outFile << "===== Profiling Report =====\n";
+    for (const auto &entry : entries)
     {
-      outFile << entry.first << ": " << entry.second << " calls\n";
-    }
-
-    // Write time spent in functions, sorted by time
-    outFile << "\n===== Time Spent (us) =====\n";
-    std::vector<std::pair<std::string, long long>> sortedTimes(timeCounters.begin(), timeCounters.end());
-    std::sort(sortedTimes.begin(), sortedTimes.end(),
-              [](const std::pair<std::string, long long> &a, const std::pair<std::string, long long> &b)
-              {
-                return a.second > b.second;
-              });
-
-    for (const auto &entry : sortedTimes)
-    {
-      outFile << timerNames.at(entry.first) << ": " << entry.second << " us\n";
+      outFile << entry.first << ": " << entry.second.duration << " us, "
+              << entry.second.count << " calls\n";
     }
 
     outFile.close();
@@ -156,13 +85,8 @@ private:
   void operator=(Profiler const &) = delete;
   void operator=(Profiler &&) = delete;
 
-  std::unordered_map<std::string, unsigned int> counters;
-  std::unordered_map<std::string, long long> timeCounters;
-  std::unordered_map<std::string, std::string> timerNames;
-  std::stack<std::string> timerStack;
   mutable std::mutex mtx;
-  mutable std::mutex timeMtx;
-  mutable std::mutex timerStackMtx;
+  std::unordered_map<std::string, ProfileInfo> profileData;
 };
 
 /// @brief A timer class that records the time spent in a function/method
@@ -171,40 +95,32 @@ class Timer
 {
 public:
   Timer(const std::string &functionName, const std::string &fileName, int lineNo, Profiler &profiler)
-      : refProfiler(profiler), start(std::chrono::high_resolution_clock::now())
+      : funcName(functionName), fileName(fileName), lineNo(lineNo), refProfiler(profiler), start(std::chrono::high_resolution_clock::now())
   {
-    uniqueID = generate_uuid();
     std::stringstream ss;
     ss << fileName << ":" << lineNo << ":" << functionName;
     logStr = ss.str();
-    refProfiler.timerNames[uniqueID] = logStr;
   }
 
   ~Timer()
   {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-
-    {
-      auto end = std::chrono::high_resolution_clock::now();
-      auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-      refProfiler.recordTime(uniqueID, duration);
-    }
+    refProfiler.recordTimeAndCalls(funcName, fileName, lineNo, duration);
   }
 
 private:
-  std::string uniqueID;
+  size_t lineNo;
+
   std::string logStr;
   std::string funcName;
   std::string fileName;
-  int lineNo;
+
   Profiler &refProfiler;
   std::chrono::time_point<std::chrono::high_resolution_clock> start;
 };
 
-#if defined(SCOPE_PROFILE_COVERAGE)
-#define RECORD_CALL() Profiler::getInstance().recordCall(__FUNCTION__, __FILE__, __LINE__)
-#elif defined(SCOPE_PROFILE_CPU_CONSUMPTION)
+#if defined(PROFILER_ENABLED)
 #define RECORD_CALL() Timer timer##__LINE__(__FUNCTION__, __FILE__, __LINE__, Profiler::getInstance())
 #else
 #define RECORD_CALL()
